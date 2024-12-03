@@ -10,7 +10,7 @@ export class CoinService {
   private startTime: number;
   private lastCoinUpdate: number;
   private isUnblurred: boolean;
-  private coinUpdateInterval: NodeJS.Timer | null;
+  private coinUpdateInterval: NodeJS.Timeout | null;
   private totalCoinsEarned: number;
 
   constructor(
