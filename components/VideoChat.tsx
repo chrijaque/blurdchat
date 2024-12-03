@@ -1,291 +1,188 @@
 import { useEffect, useRef, useState } from 'react';
-import { WebRTCService } from '@/lib/webrtc';
 import { useAuth } from '@/lib/AuthContext';
-import { CoinService } from '@/lib/CoinService';
-import { DatabaseService } from '@/lib/db';
+import { WebRTCService } from '@/lib/webrtc';
 import ChatBox from './ChatBox';
-import ReportModal from './ReportModal';
-
-interface ChatMessage {
-  text: string;
-  senderId: string;
-  senderName: string;
-  timestamp: number;
-}
+import Loading from './Loading';
+import Toast from './Toast';
 
 interface VideoChatProps {
   onDisconnect: () => void;
-  friendId?: string;
-  isFriendCall?: boolean;
 }
 
-interface MatchedUsers {
-  [key: string]: {
-    username: string;
-  };
-}
-
-export default function VideoChat({ onDisconnect, friendId, isFriendCall }: VideoChatProps) {
+export default function VideoChat({ onDisconnect }: VideoChatProps) {
   const { user } = useAuth();
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isBlurred, setIsBlurred] = useState(true);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const webRTCRef = useRef<WebRTCService | null>(null);
-  const coinServiceRef = useRef<CoinService | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>('new');
-  const [isBlurred, setIsBlurred] = useState(true);
-  const [isSearching, setIsSearching] = useState(true);
-  const [hasMatch, setHasMatch] = useState(false);
-  const [unblurRequested, setUnblurRequested] = useState(false);
-  const [waitingForUnblurAccept, setWaitingForUnblurAccept] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [matchedUsers, setMatchedUsers] = useState<MatchedUsers>({});
-  const [coinsEarned, setCoinsEarned] = useState(0);
-  const [friendAdded, setFriendAdded] = useState(false);
-  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
-  const [reportedUserId, setReportedUserId] = useState<string | null>(null);
-  const [showUnblurDialog, setShowUnblurDialog] = useState(false);
-  const [showReportModal, setShowReportModal] = useState(false);
 
   useEffect(() => {
     if (!user) return;
 
-    const setupVideoChat = async () => {
+    const initializeWebRTC = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true
-        });
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-
         webRTCRef.current = new WebRTCService(
           user.uid,
-          user.displayName || 'Anonym',
-          (remoteStream) => {
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = remoteStream;
-            }
-          },
-          setConnectionState,
-          async (users) => {
-            setIsSearching(false);
-            setHasMatch(true);
-            // Konverter array format til objekt format
-            const usersObj: MatchedUsers = {};
-            users.forEach(user => {
-              usersObj[user.userId] = { username: user.username };
-            });
-            setMatchedUsers(usersObj);
-
-            if (!isFriendCall) {
-              // Start coin tracking kun for ikke-venneopkald
-              const sessionId = `${user.uid}-${Date.now()}`;
-              coinServiceRef.current = new CoinService(user.uid, sessionId);
-              coinServiceRef.current.startTracking();
-
-              // Opdater session med begge deltagere
-              if (sessionId) {
-                const otherUserId = Object.keys(usersObj).find(id => id !== user.uid);
-                if (otherUserId) {
-                  await DatabaseService.updateChatSession(sessionId, {
-                    participants: [user.uid, otherUserId]
-                  });
-                }
-              }
-            }
-          },
-          () => {
-            // Handle unblur request
-            setShowUnblurDialog(true);
-          },
-          () => {
-            setIsBlurred(false);
-            coinServiceRef.current?.handleUnblur();
-
-            // Tilføj brugerne som venner når blur fjernes
-            const otherUserId = Object.keys(matchedUsers).find(id => id !== user.uid);
-            if (otherUserId && matchedUsers[otherUserId]) {
-              Promise.all([
-                DatabaseService.addFriend(
-                  user.uid,
-                  otherUserId,
-                  matchedUsers[otherUserId].username
-                ),
-                DatabaseService.addFriend(
-                  otherUserId,
-                  user.uid,
-                  user.displayName || 'Anonym'
-                )
-              ]).catch(error => {
-                console.error('Fejl ved tilføjelse af ven:', error);
-              });
-            }
-          },
-          (message) => {
-            setMessages(prev => [...prev, message]);
-          }
+          user.displayName || 'Anonymous',
+          handleRemoteStream,
+          handleConnectionStateChange,
+          handleMatchFound,
+          handleUnblurRequest,
+          handleUnblurAccept,
+          handleChatMessage
         );
 
-        if (friendId) {
-          // Hvis det er et venneopkald, ring til vennen
-          await webRTCRef.current.callFriend(friendId);
-        } else {
-          // Ellers find en tilfældig match
-          webRTCRef.current.startSearching();
+        await webRTCRef.current.startLocalStream();
+        if (localVideoRef.current && webRTCRef.current) {
+          localVideoRef.current.srcObject = webRTCRef.current.getLocalStream();
         }
+
+        await webRTCRef.current.findMatch();
       } catch (error) {
-        console.error('Fejl ved start af video chat:', error);
-        // Vis fejlbesked til brugeren
+        console.error('Error initializing WebRTC:', error);
+        setError('Could not access camera or microphone');
+        setIsLoading(false);
       }
     };
 
-    setupVideoChat();
+    initializeWebRTC();
 
     return () => {
-      webRTCRef.current?.disconnect();
-      coinServiceRef.current?.endSession();
+      if (webRTCRef.current) {
+        webRTCRef.current.disconnect();
+      }
     };
-  }, [user, friendId]);
+  }, [user]);
 
-  const handleUnblur = () => {
-    if (!webRTCRef.current) return;
-    
-    if (unblurRequested) {
-      webRTCRef.current.acceptUnblur();
-      setIsBlurred(false);
-      setUnblurRequested(false);
-    } else {
-      webRTCRef.current.requestUnblur();
-      setWaitingForUnblurAccept(true);
+  const handleRemoteStream = (stream: MediaStream) => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = stream;
+      setIsLoading(false);
+      setIsConnected(true);
     }
   };
 
-  const handleSendMessage = (message: string) => {
-    webRTCRef.current?.sendMessage(message);
-  };
-
-  const handleDisconnect = async () => {
-    if (!isFriendCall) {
-      await coinServiceRef.current?.endSession();
-      setCoinsEarned(coinServiceRef.current?.getTotalCoinsEarned() || 0);
-    }
-    onDisconnect();
-  };
-
-  const handleReport = () => {
-    const otherUserId = Object.keys(matchedUsers).find(id => id !== user?.uid);
-    if (otherUserId) {
-      setReportedUserId(otherUserId);
-      setIsReportModalOpen(true);
+  const handleConnectionStateChange = (state: RTCPeerConnectionState) => {
+    if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+      setIsConnected(false);
+      setToast({ message: 'Peer disconnected', type: 'info' });
+      setTimeout(onDisconnect, 2000);
     }
   };
 
-  const handleUnblurAccept = () => {
-    setShowUnblurDialog(false);
-    webRTCRef.current?.acceptUnblur();
+  const handleMatchFound = (roomId: string, users: any[]) => {
+    if (webRTCRef.current) {
+      webRTCRef.current.createOffer(roomId);
+    }
   };
 
   const handleUnblurRequest = () => {
-    webRTCRef.current?.requestUnblur();
+    setToast({ message: 'Peer requested to unblur', type: 'info' });
   };
 
-  if (isSearching) {
+  const handleUnblurAccept = () => {
+    setIsBlurred(false);
+    setToast({ message: 'Unblur accepted!', type: 'success' });
+  };
+
+  const handleChatMessage = (message: any) => {
+    setMessages(prev => [...prev, message]);
+  };
+
+  const handleSendMessage = (message: string) => {
+    if (webRTCRef.current) {
+      webRTCRef.current.sendChatMessage(message);
+    }
+  };
+
+  const handleRequestUnblur = () => {
+    if (webRTCRef.current) {
+      webRTCRef.current.requestUnblur();
+      setToast({ message: 'Unblur request sent', type: 'info' });
+    }
+  };
+
+  const handleAcceptUnblur = () => {
+    if (webRTCRef.current) {
+      webRTCRef.current.acceptUnblur();
+      setIsBlurred(false);
+    }
+  };
+
+  if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-xl">
-          {friendId ? 'Ringer op...' : 'Søger efter en chat partner...'}
+      <div className="min-h-screen flex items-center justify-center bg-red-50">
+        <div className="text-center">
+          <p className="text-red-500 text-xl mb-4">{error}</p>
+          <button
+            onClick={onDisconnect}
+            className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600"
+          >
+            Go Back
+          </button>
         </div>
       </div>
     );
   }
 
+  if (isLoading) {
+    return <Loading text="Connecting to peer..." />;
+  }
+
   return (
-    <div className="w-full max-w-6xl mx-auto p-4">
-      <div className="grid grid-cols-3 gap-4">
-        <div className="col-span-2">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="relative">
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full rounded-lg"
-              />
-              <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded">
-                Du
-              </div>
-            </div>
-            
-            <div className="relative">
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className={`w-full rounded-lg ${isBlurred ? 'blur-lg' : ''}`}
-              />
-              <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded">
-                {isBlurred ? 'Partner' : matchedUsers[Object.keys(matchedUsers).find(id => id !== user?.uid) || '']?.username || 'Partner'}
-              </div>
-              {!isBlurred && friendAdded && !isFriendCall && (
-                <div className="absolute top-2 right-2 bg-green-500 bg-opacity-75 text-white px-2 py-1 rounded text-sm">
-                  Tilføjet som ven ✓
-                </div>
-              )}
-            </div>
+    <div className="min-h-screen bg-gray-100 p-4">
+      <div className="max-w-6xl mx-auto">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="relative">
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`w-full rounded-lg ${isBlurred ? 'filter blur-md' : ''}`}
+            />
+            <p className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded">
+              You
+            </p>
           </div>
-
-          <div className="flex justify-between items-center mt-4">
-            <div className="flex space-x-4">
-              {hasMatch && !isFriendCall && (
-                <button
-                  onClick={handleUnblur}
-                  disabled={!isBlurred || waitingForUnblurAccept}
-                  className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded disabled:opacity-50"
-                >
-                  {unblurRequested ? 'Accepter Unblur' : waitingForUnblurAccept ? 'Venter på svar...' : 'Anmod om Unblur'}
-                </button>
-              )}
-              
-              <button
-                onClick={handleDisconnect}
-                className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded"
-              >
-                Afslut Chat
-              </button>
-
-              {!isFriendCall && (
-                <button
-                  onClick={handleReport}
-                  className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded"
-                >
-                  Rapporter
-                </button>
-              )}
-            </div>
-
-            {!isFriendCall && (
-              <div className="text-right">
-                <p className="text-sm text-gray-600">Optjente mønter denne session:</p>
-                <p className="text-xl font-bold">{coinsEarned} 🪙</p>
-              </div>
-            )}
-          </div>
-
-          <div className="text-center mt-4">
-            <p>Status: {connectionState}</p>
-            {unblurRequested && !isFriendCall && (
-              <p className="text-blue-500 mt-2">
-                Din partner vil gerne fjerne blur effekten. Klik på "Accepter Unblur" for at acceptere.
-              </p>
-            )}
+          
+          <div className="relative">
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className={`w-full rounded-lg ${isBlurred ? 'filter blur-md' : ''}`}
+            />
+            <p className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded">
+              Peer
+            </p>
           </div>
         </div>
 
-        <div className="col-span-1">
+        <div className="mt-4 flex justify-center space-x-4">
+          <button
+            onClick={handleRequestUnblur}
+            disabled={!isBlurred}
+            className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50"
+          >
+            Request Unblur
+          </button>
+          
+          <button
+            onClick={onDisconnect}
+            className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600"
+          >
+            End Chat
+          </button>
+        </div>
+
+        <div className="mt-4">
           <ChatBox
             messages={messages}
             onSendMessage={handleSendMessage}
@@ -294,16 +191,11 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
         </div>
       </div>
 
-      {reportedUserId && sessionId && user && (
-        <ReportModal
-          isOpen={isReportModalOpen}
-          onClose={() => {
-            setIsReportModalOpen(false);
-            setReportedUserId(null);
-          }}
-          reporterId={user.uid}
-          reportedId={reportedUserId}
-          sessionId={sessionId}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
         />
       )}
     </div>
