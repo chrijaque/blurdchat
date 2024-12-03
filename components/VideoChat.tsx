@@ -19,6 +19,12 @@ interface VideoChatProps {
   isFriendCall?: boolean;
 }
 
+interface MatchedUsers {
+  [key: string]: {
+    username: string;
+  };
+}
+
 export default function VideoChat({ onDisconnect, friendId, isFriendCall }: VideoChatProps) {
   const { user } = useAuth();
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -33,7 +39,7 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
   const [unblurRequested, setUnblurRequested] = useState(false);
   const [waitingForUnblurAccept, setWaitingForUnblurAccept] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [matchedUsers, setMatchedUsers] = useState<{[key: string]: { username: string }}>({});
+  const [matchedUsers, setMatchedUsers] = useState<MatchedUsers>({});
   const [coinsEarned, setCoinsEarned] = useState(0);
   const [friendAdded, setFriendAdded] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -71,7 +77,12 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
           async (users) => {
             setIsSearching(false);
             setHasMatch(true);
-            setMatchedUsers(users);
+            // Konverter array format til objekt format
+            const usersObj: MatchedUsers = {};
+            users.forEach(user => {
+              usersObj[user.userId] = { username: user.username };
+            });
+            setMatchedUsers(usersObj);
 
             if (!isFriendCall) {
               // Start coin tracking kun for ikke-venneopkald
@@ -79,7 +90,7 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
 
               // Opdater session med begge deltagere
               if (sessionId) {
-                const otherUserId = Object.keys(users).find(id => id !== user.uid);
+                const otherUserId = Object.keys(usersObj).find(id => id !== user.uid);
                 if (otherUserId) {
                   await DatabaseService.updateChatSession(sessionId, {
                     participants: [user.uid, otherUserId]

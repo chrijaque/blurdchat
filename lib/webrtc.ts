@@ -15,7 +15,8 @@ interface MatchedUsers {
 
 export class WebRTCService {
   private peerConnection: RTCPeerConnection | null = null;
-  private socket: Socket | null = null;
+  private dataChannel: RTCDataChannel | null = null;
+  private socket: Socket;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private roomId: string | null = null;
@@ -27,20 +28,17 @@ export class WebRTCService {
     private username: string,
     private onRemoteStream: (stream: MediaStream) => void,
     private onConnectionStateChange: (state: RTCPeerConnectionState) => void,
-    private onMatchFound: (users: MatchedUsers) => void,
+    private onMatchFound: (users: { userId: string; username: string }[]) => void,
     private onUnblurRequested: () => void,
     private onUnblurAccepted: () => void,
-    private onChatMessage: (message: ChatMessage) => void,
-    private onIncomingCall?: (callerId: string, callerName: string) => void,
-    private onCallRejected?: () => void,
-    private onCallFailed?: (reason: string) => void
+    private onChatMessage: (message: { text: string; senderId: string; senderName: string; timestamp: number }) => void
   ) {
-    this.initializeSocket();
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001';
+    this.socket = io(socketUrl);
+    this.setupSocketListeners();
   }
 
-  private initializeSocket() {
-    this.socket = io('http://207.154.254.52:3001');
-
+  private setupSocketListeners() {
     this.socket.on('connect', () => {
       this.socket?.emit('register', {
         id: this.userId,
@@ -137,36 +135,81 @@ export class WebRTCService {
   }
 
   private async initializePeerConnection() {
-    this.peerConnection = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-      ]
-    });
-
-    this.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.socket?.emit('ice-candidate', event.candidate);
-      }
-    };
-
-    this.peerConnection.ontrack = (event) => {
-      this.remoteStream = event.streams[0];
-      this.onRemoteStream(event.streams[0]);
-    };
-
-    this.peerConnection.onconnectionstatechange = () => {
-      if (this.peerConnection) {
-        this.onConnectionStateChange(this.peerConnection.connectionState);
-      }
-    };
-
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => {
-        if (this.peerConnection && this.localStream) {
-          this.peerConnection.addTrack(track, this.localStream);
-        }
+    try {
+      this.peerConnection = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+        ],
       });
+
+      if (!this.isFriendCall) {
+        this.dataChannel = this.peerConnection.createDataChannel('chat');
+        this.setupDataChannel(this.dataChannel);
+      }
+
+      this.peerConnection.ondatachannel = (event) => {
+        this.dataChannel = event.channel;
+        this.setupDataChannel(this.dataChannel);
+      };
+
+      this.peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          this.socket?.emit('ice-candidate', event.candidate);
+        }
+      };
+
+      this.peerConnection.ontrack = (event) => {
+        this.remoteStream = event.streams[0];
+        this.onRemoteStream(event.streams[0]);
+      };
+
+      this.peerConnection.onconnectionstatechange = () => {
+        if (this.peerConnection) {
+          this.onConnectionStateChange(this.peerConnection.connectionState);
+        }
+      };
+
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(track => {
+          if (this.peerConnection && this.localStream) {
+            this.peerConnection.addTrack(track, this.localStream);
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Fejl ved oprettelse af peer connection:', error);
+      throw error;
     }
+  }
+
+  private setupDataChannel(channel: RTCDataChannel) {
+    channel.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === 'chat') {
+          this.onChatMessage(message.data);
+        } else if (message.type === 'unblurRequest') {
+          this.onUnblurRequested();
+        } else if (message.type === 'unblurAccept') {
+          this.onUnblurAccepted();
+        }
+      } catch (error) {
+        console.error('Fejl ved behandling af besked:', error);
+      }
+    };
+
+    channel.onopen = () => {
+      console.log('DataChannel er åben');
+    };
+
+    channel.onclose = () => {
+      console.log('DataChannel er lukket');
+    };
+
+    channel.onerror = (error) => {
+      console.error('DataChannel fejl:', error);
+    };
   }
 
   public async findMatch() {
@@ -220,5 +263,27 @@ export class WebRTCService {
 
   public isVideoBlurred(): boolean {
     return !this.isFriendCall && this.roomId !== null;
+  }
+
+  public sendMessage(text: string) {
+    if (this.dataChannel && this.dataChannel.readyState === 'open') {
+      const message = {
+        type: 'chat',
+        data: {
+          text,
+          senderId: this.userId,
+          senderName: this.username,
+          timestamp: Date.now()
+        }
+      };
+      this.dataChannel.send(JSON.stringify(message));
+      // Trigger the callback for the sender's own message
+      this.onChatMessage({
+        text,
+        senderId: this.userId,
+        senderName: this.username,
+        timestamp: Date.now()
+      });
+    }
   }
 } 
