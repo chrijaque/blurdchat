@@ -43,14 +43,17 @@ io.on('connection', (socket) => {
       const room = new Set([socket.id, availableUser.socketId]);
       activeRooms.set(roomId, room);
 
+      // Join socket.io room
+      socket.join(roomId);
+      io.sockets.sockets.get(availableUser.socketId)?.join(roomId);
+
       // Notify both users
       const users = [
         { userId: user.userId, username: user.username },
         { userId: availableUser.userId, username: availableUser.username }
       ];
 
-      io.to(socket.id).emit('match', { roomId, users });
-      io.to(availableUser.socketId).emit('match', { roomId, users });
+      io.to(roomId).emit('match', { roomId, users });
     }
   });
 
@@ -98,7 +101,7 @@ io.on('connection', (socket) => {
     activeUsers.delete(socket.id);
 
     // Clean up rooms
-    for (const [roomId, room] of activeRooms.entries()) {
+    for (const [roomId, room] of activeRooms) {
       if (room.has(socket.id)) {
         const otherUser = Array.from(room).find(id => id !== socket.id);
         if (otherUser) {

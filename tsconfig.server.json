@@ -2,9 +2,11 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "module": "commonjs",
+    "target": "es2015",
     "outDir": "dist",
     "noEmit": false,
-    "isolatedModules": false
+    "isolatedModules": false,
+    "downlevelIteration": true
   },
   "include": ["server/**/*.ts"]
 } 
