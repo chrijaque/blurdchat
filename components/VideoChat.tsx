@@ -48,21 +48,15 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
   useEffect(() => {
     if (!user) return;
 
-    const startVideoChat = async () => {
+    const setupVideoChat = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-        }
-
-        // Opret chat session
-        const newSessionId = await DatabaseService.createChatSession([user.uid]);
-        setSessionId(newSessionId);
-
-        // Initialiser coin service (kun for ikke-venneopkald)
-        if (!isFriendCall) {
-          coinServiceRef.current = new CoinService(user.uid, newSessionId);
         }
 
         webRTCRef.current = new WebRTCService(
@@ -86,7 +80,9 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
 
             if (!isFriendCall) {
               // Start coin tracking kun for ikke-venneopkald
-              coinServiceRef.current?.startTracking();
+              const sessionId = `${user.uid}-${Date.now()}`;
+              coinServiceRef.current = new CoinService(user.uid, sessionId);
+              coinServiceRef.current.startTracking();
 
               // Opdater session med begge deltagere
               if (sessionId) {
@@ -99,69 +95,39 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
               }
             }
           },
-          () => setUnblurRequested(true),
-          async () => {
-            setIsBlurred(false);
-            setUnblurRequested(false);
-            setWaitingForUnblurAccept(false);
-            
-            if (!isFriendCall) {
-              // Håndter unblur og coins kun for ikke-venneopkald
-              await coinServiceRef.current?.handleUnblur();
-              setCoinsEarned(coinServiceRef.current?.getTotalCoinsEarned() || 0);
-
-              // Tilføj brugerne som venner
-              if (!friendAdded) {
-                const otherUserId = Object.keys(matchedUsers).find(id => id !== user.uid);
-                if (otherUserId && matchedUsers[otherUserId]) {
-                  await Promise.all([
-                    DatabaseService.addFriend(
-                      user.uid,
-                      otherUserId,
-                      matchedUsers[otherUserId].username
-                    ),
-                    DatabaseService.addFriend(
-                      otherUserId,
-                      user.uid,
-                      user.displayName || 'Anonym'
-                    )
-                  ]);
-                  setFriendAdded(true);
-                }
-              }
-            }
+          () => {
+            // Handle unblur request
+            setShowUnblurDialog(true);
+          },
+          () => {
+            setIsUnblurred(true);
+            coinServiceRef.current?.handleUnblur();
           },
           (message) => {
             setMessages(prev => [...prev, message]);
           }
         );
 
-        await webRTCRef.current.startCall(stream);
-        
         if (friendId) {
           // Hvis det er et venneopkald, ring til vennen
           await webRTCRef.current.callFriend(friendId);
         } else {
           // Ellers find en tilfældig match
-          await webRTCRef.current.findMatch();
+          webRTCRef.current.startSearching();
         }
       } catch (error) {
         console.error('Fejl ved start af video chat:', error);
-        onDisconnect();
+        // Vis fejlbesked til brugeren
       }
     };
 
-    startVideoChat();
+    setupVideoChat();
 
     return () => {
       webRTCRef.current?.disconnect();
-      if (!isFriendCall) {
-        coinServiceRef.current?.endSession().then(() => {
-          setCoinsEarned(coinServiceRef.current?.getTotalCoinsEarned() || 0);
-        });
-      }
+      coinServiceRef.current?.endSession();
     };
-  }, [user, onDisconnect, friendId, isFriendCall]);
+  }, [user, friendId]);
 
   const handleUnblur = () => {
     if (!webRTCRef.current) return;
