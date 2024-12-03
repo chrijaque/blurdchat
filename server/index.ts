@@ -4,197 +4,113 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 
 const app = express();
-app.use(cors());
-
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: process.env.NEXT_PUBLIC_CLIENT_URL || 'http://localhost:3000',
+    methods: ['GET', 'POST']
   }
 });
 
-interface User {
-  id: string;
-  age?: number;
-  gender?: string;
-  socketId: string;
-  isAvailable: boolean;
-  username?: string;
-}
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-interface ChatMessage {
-  text: string;
-  senderId: string;
-  senderName: string;
-  timestamp: number;
-}
-
-const users = new Map<string, User>();
-const waitingUsers = new Set<string>();
-const chatHistory = new Map<string, ChatMessage[]>();
-const friendCalls = new Map<string, { callerId: string, callerName: string }>();
+// Active users and rooms
+const activeUsers = new Map<string, { userId: string; username: string; socketId: string }>();
+const activeRooms = new Map<string, Set<string>>();
 
 io.on('connection', (socket) => {
-  console.log('Bruger forbundet:', socket.id);
+  console.log('User connected:', socket.id);
 
-  socket.on('register', (userData: { id: string; age?: number; gender?: string; username?: string }) => {
-    users.set(userData.id, {
-      ...userData,
-      socketId: socket.id,
-      isAvailable: true
-    });
+  socket.on('register', ({ userId, username }) => {
+    activeUsers.set(socket.id, { userId, username, socketId: socket.id });
+    console.log('User registered:', { userId, username });
   });
 
-  // Venneopkald håndtering
-  socket.on('friend-call', async ({ callerId, callerName, friendId }) => {
-    const friend = users.get(friendId);
-    if (friend && friend.isAvailable) {
-      friendCalls.set(friendId, { callerId, callerName });
-      io.to(friend.socketId).emit('incoming-friend-call', {
-        callerId,
-        callerName
-      });
-    } else {
-      // Vennen er ikke tilgængelig
-      socket.emit('friend-call-failed', {
-        friendId,
-        reason: 'unavailable'
-      });
-    }
-  });
-
-  socket.on('accept-friend-call', ({ callerId, friendId }) => {
-    const caller = users.get(callerId);
-    const friend = users.get(friendId);
-    
-    if (caller && friend) {
-      // Opret et chat rum for vennerne
-      const roomId = `friend-${callerId}-${friendId}`;
-      socket.join(roomId);
-      io.sockets.sockets.get(caller.socketId)?.join(roomId);
-
-      // Marker begge brugere som ikke tilgængelige
-      users.get(callerId)!.isAvailable = false;
-      users.get(friendId)!.isAvailable = false;
-
-      // Fjern ventende opkald
-      friendCalls.delete(friendId);
-
-      // Informer begge brugere om det accepterede opkald
-      io.to(roomId).emit('friend-call-accepted', {
-        roomId,
-        isFriendCall: true,
-        users: {
-          [callerId]: { username: caller.username },
-          [friendId]: { username: friend.username }
-        }
-      });
-    }
-  });
-
-  socket.on('reject-friend-call', ({ callerId, friendId }) => {
-    const caller = users.get(callerId);
-    if (caller) {
-      io.to(caller.socketId).emit('friend-call-rejected', { friendId });
-    }
-    friendCalls.delete(friendId);
-  });
-
-  socket.on('find-match', async (userId: string) => {
-    const user = users.get(userId);
+  socket.on('find-match', ({ userId }) => {
+    const user = Array.from(activeUsers.values()).find(u => u.userId === userId);
     if (!user) return;
 
-    waitingUsers.add(userId);
-    
-    // Find en match baseret på alder og køn
-    const potentialMatches = Array.from(waitingUsers)
-      .filter(id => id !== userId)
-      .map(id => users.get(id))
-      .filter(u => u && u.isAvailable)
-      .sort((a, b) => {
-        if (!a || !b || !user.age) return 0;
-        const ageDiffA = Math.abs((a.age || 0) - (user.age || 0));
-        const ageDiffB = Math.abs((b.age || 0) - (user.age || 0));
-        return ageDiffA - ageDiffB;
-      });
+    // Find another user who is not in a room
+    const availableUser = Array.from(activeUsers.values()).find(u => 
+      u.userId !== userId && 
+      !Array.from(activeRooms.values()).some(room => room.has(u.socketId))
+    );
 
-    const match = potentialMatches[0];
-    if (match) {
-      waitingUsers.delete(userId);
-      waitingUsers.delete(match.id);
-      
-      users.get(userId)!.isAvailable = false;
-      users.get(match.id)!.isAvailable = false;
+    if (availableUser) {
+      const roomId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const room = new Set([socket.id, availableUser.socketId]);
+      activeRooms.set(roomId, room);
 
-      // Opret et chat rum for de matchede brugere
-      const roomId = `${userId}-${match.id}`;
-      socket.join(roomId);
-      io.sockets.sockets.get(match.socketId)?.join(roomId);
+      // Notify both users
+      const users = [
+        { userId: user.userId, username: user.username },
+        { userId: availableUser.userId, username: availableUser.username }
+      ];
 
-      // Initialiser chat historik for rummet
-      chatHistory.set(roomId, []);
-
-      // Informer begge brugere om matchet
-      io.to(roomId).emit('match-found', { 
-        roomId,
-        isFriendCall: false,
-        users: {
-          [userId]: { username: user.username },
-          [match.id]: { username: match.username }
-        }
-      });
+      io.to(socket.id).emit('match', { roomId, users });
+      io.to(availableUser.socketId).emit('match', { roomId, users });
     }
   });
 
-  // WebRTC Signalering
-  socket.on('offer', (data) => {
-    socket.broadcast.emit('offer', data);
+  socket.on('offer', ({ offer, roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      const recipientSocket = Array.from(room).find(id => id !== socket.id);
+      if (recipientSocket) {
+        io.to(recipientSocket).emit('offer', offer);
+      }
+    }
   });
 
-  socket.on('answer', (data) => {
-    socket.broadcast.emit('answer', data);
+  socket.on('answer', ({ answer, roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      const recipientSocket = Array.from(room).find(id => id !== socket.id);
+      if (recipientSocket) {
+        io.to(recipientSocket).emit('answer', answer);
+      }
+    }
   });
 
-  socket.on('ice-candidate', (data) => {
-    socket.broadcast.emit('ice-candidate', data);
+  socket.on('ice-candidate', ({ candidate, roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      const recipientSocket = Array.from(room).find(id => id !== socket.id);
+      if (recipientSocket) {
+        io.to(recipientSocket).emit('ice-candidate', candidate);
+      }
+    }
   });
 
-  // Unblur håndtering
-  socket.on('unblur-request', (roomId) => {
-    socket.to(roomId).emit('unblur-requested');
-  });
-
-  socket.on('unblur-accept', (roomId) => {
-    io.to(roomId).emit('unblur-accepted');
+  socket.on('call-friend', ({ callerId, callerName, friendId }) => {
+    const friendSocket = Array.from(activeUsers.values()).find(u => u.userId === friendId);
+    if (friendSocket) {
+      io.to(friendSocket.socketId).emit('incoming-call', { callerId, callerName });
+    }
   });
 
   socket.on('disconnect', () => {
-    // Find og fjern brugeren fra alle collections
-    const userId = Array.from(users.entries())
-      .find(([_, user]) => user.socketId === socket.id)?.[0];
+    console.log('User disconnected:', socket.id);
     
-    if (userId) {
-      // Afbryd eventuelle ventende opkald
-      if (friendCalls.has(userId)) {
-        const { callerId } = friendCalls.get(userId)!;
-        const caller = users.get(callerId);
-        if (caller) {
-          io.to(caller.socketId).emit('friend-call-failed', {
-            friendId: userId,
-            reason: 'disconnected'
-          });
-        }
-        friendCalls.delete(userId);
-      }
+    // Clean up user from active users
+    activeUsers.delete(socket.id);
 
-      users.delete(userId);
-      waitingUsers.delete(userId);
+    // Clean up rooms
+    for (const [roomId, room] of activeRooms.entries()) {
+      if (room.has(socket.id)) {
+        const otherUser = Array.from(room).find(id => id !== socket.id);
+        if (otherUser) {
+          io.to(otherUser).emit('peer-disconnected');
+        }
+        activeRooms.delete(roomId);
+      }
     }
   });
 });
 
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
-  console.log(`Server kører på port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 }); 
