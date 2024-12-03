@@ -101,7 +101,7 @@ io.on('connection', (socket) => {
     activeUsers.delete(socket.id);
 
     // Clean up rooms
-    for (const [roomId, room] of activeRooms) {
+    Array.from(activeRooms.entries()).forEach(([roomId, room]) => {
       if (room.has(socket.id)) {
         const otherUser = Array.from(room).find(id => id !== socket.id);
         if (otherUser) {
@@ -109,7 +109,7 @@ io.on('connection', (socket) => {
         }
         activeRooms.delete(roomId);
       }
-    }
+    });
   });
 });
 

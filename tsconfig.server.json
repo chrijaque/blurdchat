@@ -2,11 +2,14 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "module": "commonjs",
-    "target": "es2015",
+    "target": "es2018",
+    "lib": ["es2018", "esnext.asynciterable"],
     "outDir": "dist",
     "noEmit": false,
     "isolatedModules": false,
-    "downlevelIteration": true
+    "downlevelIteration": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
   },
   "include": ["server/**/*.ts"]
 } 
