@@ -33,7 +33,7 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
   const coinServiceRef = useRef<CoinService | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>('new');
-  const [isBlurred, setIsBlurred] = useState(!isFriendCall);
+  const [isBlurred, setIsBlurred] = useState(true);
   const [isSearching, setIsSearching] = useState(true);
   const [hasMatch, setHasMatch] = useState(false);
   const [unblurRequested, setUnblurRequested] = useState(false);
@@ -44,6 +44,8 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
   const [friendAdded, setFriendAdded] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [reportedUserId, setReportedUserId] = useState<string | null>(null);
+  const [showUnblurDialog, setShowUnblurDialog] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -100,8 +102,27 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
             setShowUnblurDialog(true);
           },
           () => {
-            setIsUnblurred(true);
+            setIsBlurred(false);
             coinServiceRef.current?.handleUnblur();
+
+            // Tilføj brugerne som venner når blur fjernes
+            const otherUserId = Object.keys(matchedUsers).find(id => id !== user.uid);
+            if (otherUserId && matchedUsers[otherUserId]) {
+              Promise.all([
+                DatabaseService.addFriend(
+                  user.uid,
+                  otherUserId,
+                  matchedUsers[otherUserId].username
+                ),
+                DatabaseService.addFriend(
+                  otherUserId,
+                  user.uid,
+                  user.displayName || 'Anonym'
+                )
+              ]).catch(error => {
+                console.error('Fejl ved tilføjelse af ven:', error);
+              });
+            }
           },
           (message) => {
             setMessages(prev => [...prev, message]);
@@ -160,6 +181,15 @@ export default function VideoChat({ onDisconnect, friendId, isFriendCall }: Vide
       setReportedUserId(otherUserId);
       setIsReportModalOpen(true);
     }
+  };
+
+  const handleUnblurAccept = () => {
+    setShowUnblurDialog(false);
+    webRTCRef.current?.acceptUnblur();
+  };
+
+  const handleUnblurRequest = () => {
+    webRTCRef.current?.requestUnblur();
   };
 
   if (isSearching) {
