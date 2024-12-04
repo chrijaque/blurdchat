@@ -6,11 +6,13 @@
     "dev": "next dev",
     "build:server": "tsc --project tsconfig.server.json",
     "build:next": "next build",
-    "build": "npm run build:server && npm run build:next",
+    "build": "next build",
     "start": "next start",
     "start:server": "node dist/server/index.js",
     "dev:server": "ts-node-dev --respawn --transpile-only server/index.ts",
-    "lint": "next lint"
+    "lint": "next lint",
+    "clean": "rm -rf .next out dist",
+    "vercel-build": "npm run clean && npm run build"
   },
   "dependencies": {
     "@types/node": "^20.0.0",
