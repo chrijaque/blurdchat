@@ -1,11 +1,7 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/next"
-    }
-  ],
+  "buildCommand": "npm run build:next",
+  "outputDirectory": ".next",
   "env": {
     "NEXT_PUBLIC_SOCKET_URL": "https://ws.blurd.chat",
     "NEXT_PUBLIC_FIREBASE_API_KEY": "AIzaSyA8Pam2UO9Yk3n3DMWaZFqV8D9-o7EQddA",
