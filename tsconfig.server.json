@@ -7,9 +7,15 @@
     "outDir": "dist",
     "noEmit": false,
     "isolatedModules": false,
-    "downlevelIteration": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    }
   },
-  "include": ["server/**/*.ts"]
+  "include": ["server/**/*.ts"],
+  "exclude": ["node_modules"]
 } 

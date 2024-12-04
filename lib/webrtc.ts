@@ -4,6 +4,7 @@ export class WebRTCService {
   private socket: Socket;
   private peerConnection: RTCPeerConnection;
   private localStream: MediaStream | null = null;
+  private currentRoomId: string | null = null;
 
   constructor(
     private userId: string,
@@ -16,39 +17,40 @@ export class WebRTCService {
     private onChatMessage: (message: any) => void
   ) {
     // Initialize socket connection
-    this.socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'https://blurd.chat', {
-      transports: ['websocket'],
-      autoConnect: true
+    this.socket = io('http://localhost:3002', {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000
     });
 
     // Initialize WebRTC peer connection
     this.peerConnection = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' }
       ]
     });
 
-    this.setupSocketListeners();
+    this.setupSocketEvents();
     this.setupPeerConnectionListeners();
-    this.registerUser();
   }
 
-  private registerUser() {
-    this.socket.emit('register', { userId: this.userId, username: this.username });
-  }
+  private setupSocketEvents() {
+    this.socket.on('connect', () => {
+      console.log('Socket connected');
+      this.registerUser();
+    });
 
-  private setupSocketListeners() {
     this.socket.on('match', ({ roomId, users }) => {
       console.log('Match found:', { roomId, users });
+      this.currentRoomId = roomId;
       this.onMatchFound(roomId, users);
     });
 
     this.socket.on('offer', async (offer: RTCSessionDescriptionInit) => {
       try {
+        console.log('Received offer');
         await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await this.peerConnection.createAnswer();
         await this.peerConnection.setLocalDescription(answer);
@@ -60,6 +62,7 @@ export class WebRTCService {
 
     this.socket.on('answer', async (answer: RTCSessionDescriptionInit) => {
       try {
+        console.log('Received answer');
         await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
       } catch (error) {
         console.error('Error handling answer:', error);
@@ -68,25 +71,45 @@ export class WebRTCService {
 
     this.socket.on('ice-candidate', async (candidate: RTCIceCandidateInit) => {
       try {
-        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log('Received ICE candidate');
+        if (this.peerConnection.remoteDescription) {
+          await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
       } catch (error) {
-        console.error('Error adding ice candidate:', error);
+        console.error('Error adding ICE candidate:', error);
       }
     });
 
+    this.socket.on('unblur-request', () => {
+      console.log('Received unblur request');
+      this.onUnblurRequested();
+    });
+
+    this.socket.on('unblur-accept', () => {
+      console.log('Unblur accepted');
+      this.onUnblurAccepted();
+    });
+
+    this.socket.on('chat-message', (message) => {
+      console.log('Received chat message');
+      this.onChatMessage(message);
+    });
+
     this.socket.on('peer-disconnected', () => {
+      console.log('Peer disconnected');
       this.onConnectionStateChange('disconnected');
-      this.disconnect();
     });
   }
 
   private setupPeerConnectionListeners() {
     this.peerConnection.ontrack = (event) => {
+      console.log('Received remote track');
       this.onRemoteStream(event.streams[0]);
     };
 
     this.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
+      if (event.candidate && this.currentRoomId) {
+        console.log('Sending ICE candidate');
         this.socket.emit('ice-candidate', {
           candidate: event.candidate,
           roomId: this.currentRoomId
@@ -95,11 +118,19 @@ export class WebRTCService {
     };
 
     this.peerConnection.onconnectionstatechange = () => {
+      console.log('Connection state:', this.peerConnection.connectionState);
       this.onConnectionStateChange(this.peerConnection.connectionState);
     };
   }
 
-  private currentRoomId: string | null = null;
+  private registerUser() {
+    console.log('Registering user:', { userId: this.userId, username: this.username });
+    this.socket.emit('register', { userId: this.userId, username: this.username });
+  }
+
+  public getLocalStream(): MediaStream | null {
+    return this.localStream;
+  }
 
   public async startLocalStream(): Promise<void> {
     try {
@@ -119,12 +150,14 @@ export class WebRTCService {
     }
   }
 
-  public async findMatch(): Promise<void> {
+  public findMatch(): void {
+    console.log('Finding match');
     this.socket.emit('find-match', { userId: this.userId });
   }
 
   public async createOffer(roomId: string): Promise<void> {
     try {
+      console.log('Creating offer');
       this.currentRoomId = roomId;
       const offer = await this.peerConnection.createOffer();
       await this.peerConnection.setLocalDescription(offer);
@@ -137,18 +170,21 @@ export class WebRTCService {
 
   public requestUnblur(): void {
     if (this.currentRoomId) {
-      this.socket.emit('unblur-request', this.currentRoomId);
+      console.log('Requesting unblur');
+      this.socket.emit('unblur-request', { roomId: this.currentRoomId });
     }
   }
 
   public acceptUnblur(): void {
     if (this.currentRoomId) {
-      this.socket.emit('unblur-accept', this.currentRoomId);
+      console.log('Accepting unblur');
+      this.socket.emit('unblur-accept', { roomId: this.currentRoomId });
     }
   }
 
   public sendChatMessage(message: string): void {
     if (this.currentRoomId) {
+      console.log('Sending chat message');
       this.socket.emit('chat-message', {
         roomId: this.currentRoomId,
         message,
@@ -158,15 +194,8 @@ export class WebRTCService {
     }
   }
 
-  public async callFriend(friendId: string): Promise<void> {
-    this.socket.emit('call-friend', {
-      callerId: this.userId,
-      callerName: this.username,
-      friendId
-    });
-  }
-
   public disconnect(): void {
+    console.log('Disconnecting');
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => track.stop());
       this.localStream = null;

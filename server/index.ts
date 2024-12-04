@@ -2,19 +2,38 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import { AddressInfo } from 'net';
+import { writeFile } from 'fs/promises';
 
 const app = express();
 const httpServer = createServer(app);
+
+// Configure CORS
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://blurd.chat',
+  'https://www.blurd.chat'
+];
+
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.NEXT_PUBLIC_CLIENT_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST']
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
 app.use(express.json());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
 
 // Active users and rooms
 const activeUsers = new Map<string, { userId: string; username: string; socketId: string }>();
@@ -45,7 +64,10 @@ io.on('connection', (socket) => {
 
       // Join socket.io room
       socket.join(roomId);
-      io.sockets.sockets.get(availableUser.socketId)?.join(roomId);
+      const availableSocket = io.sockets.sockets.get(availableUser.socketId);
+      if (availableSocket) {
+        availableSocket.join(roomId);
+      }
 
       // Notify both users
       const users = [
@@ -87,10 +109,30 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('call-friend', ({ callerId, callerName, friendId }) => {
-    const friendSocket = Array.from(activeUsers.values()).find(u => u.userId === friendId);
-    if (friendSocket) {
-      io.to(friendSocket.socketId).emit('incoming-call', { callerId, callerName });
+  socket.on('unblur-request', ({ roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      const recipientSocket = Array.from(room).find(id => id !== socket.id);
+      if (recipientSocket) {
+        io.to(recipientSocket).emit('unblur-request');
+      }
+    }
+  });
+
+  socket.on('unblur-accept', ({ roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      const recipientSocket = Array.from(room).find(id => id !== socket.id);
+      if (recipientSocket) {
+        io.to(recipientSocket).emit('unblur-accept');
+      }
+    }
+  });
+
+  socket.on('chat-message', ({ roomId, message, senderId, senderName }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      io.to(roomId).emit('chat-message', { message, senderId, senderName });
     }
   });
 
@@ -100,8 +142,8 @@ io.on('connection', (socket) => {
     // Clean up user from active users
     activeUsers.delete(socket.id);
 
-    // Clean up rooms
-    Array.from(activeRooms.entries()).forEach(([roomId, room]) => {
+    // Clean up rooms and notify peers
+    activeRooms.forEach((room, roomId) => {
       if (room.has(socket.id)) {
         const otherUser = Array.from(room).find(id => id !== socket.id);
         if (otherUser) {
@@ -113,7 +155,8 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3001;
+// Start server on port 3002
+const PORT = 3002;
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 }); 
