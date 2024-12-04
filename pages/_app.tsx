@@ -8,8 +8,14 @@ import { useEffect } from 'react'
 export default function App({ Component, pageProps }: AppProps) {
   // Add error logging
   useEffect(() => {
-    const handleError = (error: Error) => {
-      console.error('Global error:', error);
+    const handleError = (event: ErrorEvent) => {
+      console.error('Global error:', {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        error: event.error
+      });
     };
 
     window.addEventListener('error', handleError);
